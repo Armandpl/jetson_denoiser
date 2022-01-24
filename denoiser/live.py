@@ -8,7 +8,9 @@
 import argparse
 import sys
 
+import numpy as np
 import sounddevice as sd
+import soxr
 import torch
 
 from .demucs import DemucsStreamer
@@ -48,6 +50,9 @@ def get_parser():
         "-f", "--num_frames", type=int, default=1,
         help="Number of frames to process at once. Larger values increase "
              "the overall lag, but will improve speed.")
+    parser.add_argument(
+        "--device_sr", type=int, default=16000,
+        help="Specify a device sample rate to resample to.")
     return parser
 
 
@@ -91,16 +96,30 @@ def main():
     channels_in = min(caps['max_input_channels'], 2)
     stream_in = sd.InputStream(
         device=device_in,
-        samplerate=model.sample_rate,
+        samplerate=args.device_sr,
         channels=channels_in)
+
+    rs_in = soxr.ResampleStream(
+        args.device_sr,
+        model.sample_rate,
+        channels_in,
+        dtype='float32'
+    )
 
     device_out = parse_audio_device(args.out)
     caps = query_devices(device_out, "output")
     channels_out = min(caps['max_output_channels'], 2)
     stream_out = sd.OutputStream(
         device=device_out,
-        samplerate=model.sample_rate,
+        samplerate=args.device_sr,
         channels=channels_out)
+
+    rs_out = soxr.ResampleStream(
+        model.sample_rate,
+        args.device_sr,
+        channels_out,
+        dtype='float32'
+    )
 
     stream_in.start()
     stream_out.start()
@@ -127,6 +146,7 @@ def main():
             first = False
             current_time += length / model.sample_rate
             frame, overflow = stream_in.read(length)
+            frame = rs_in.resample_chunk(frame, last = False)
             frame = torch.from_numpy(frame).mean(dim=1).to(args.device)
             with torch.no_grad():
                 out = streamer.feed(frame[None])[0]
@@ -140,6 +160,7 @@ def main():
                 print("Clipping!!")
             out.clamp_(-1, 1)
             out = out.cpu().numpy()
+            out = rs_out.resample_chunk(out, last = False)
             underflow = stream_out.write(out)
             if overflow or underflow:
                 if current_time >= last_error_time + cooldown_time:
