@@ -7,6 +7,7 @@
 
 import argparse
 import sys
+import time
 
 import numpy as np
 import sounddevice as sd
@@ -16,6 +17,11 @@ import torch
 from .demucs import DemucsStreamer
 from .pretrained import add_model_flags, get_model
 from .utils import bold
+
+import line_profiler
+import atexit
+profile = line_profiler.LineProfiler()
+atexit.register(profile.print_stats, output_unit=1e-03)
 
 
 def get_parser():
@@ -80,14 +86,14 @@ def query_devices(device, kind):
         sys.exit(1)
     return caps
 
-
+@profile
 def main():
     args = get_parser().parse_args()
     if args.num_threads:
         torch.set_num_threads(args.num_threads)
 
     model = get_model(args).to(args.device)
-    model.eval()
+    model.eval().half()
     print("Model loaded.")
     streamer = DemucsStreamer(model, dry=args.dry, num_frames=args.num_frames)
 
@@ -97,7 +103,12 @@ def main():
     stream_in = sd.InputStream(
         device=device_in,
         samplerate=args.device_sr,
-        channels=channels_in)
+        channels=channels_in, # try only one channel to reduce latency
+        # blocksize=706, try this
+        dtype=np.float32,
+        # latency='low',
+        # never_drop_input=True
+    )
 
     rs_in = soxr.ResampleStream(
         args.device_sr,
@@ -112,7 +123,8 @@ def main():
     stream_out = sd.OutputStream(
         device=device_out,
         samplerate=args.device_sr,
-        channels=channels_out)
+        channels=channels_out,
+        dtype=np.float32)
 
     rs_out = soxr.ResampleStream(
         model.sample_rate,
@@ -120,6 +132,11 @@ def main():
         channels_out,
         dtype='float32'
     )
+
+    # warmup gpu
+    if args.device == "cuda":
+        torch.zeros(1000).cuda()
+        torch.zeros(1000).cuda()
 
     stream_in.start()
     stream_out.start()
@@ -132,7 +149,11 @@ def main():
     sr_ms = model.sample_rate / 1000
     stride_ms = streamer.stride / sr_ms
     print(f"Ready to process audio, total lag: {streamer.total_length / sr_ms:.1f}ms.")
+    counter = 0
     while True:
+        counter += 1
+        if counter == 500:
+            break
         try:
             if current_time > last_log_time + log_delta:
                 last_log_time = current_time
@@ -145,13 +166,17 @@ def main():
             length = streamer.total_length if first else streamer.stride
             first = False
             current_time += length / model.sample_rate
-            frame, overflow = stream_in.read(length)
+            to_read = int(length*args.device_sr/model.sample_rate)
+            frame, overflow = stream_in.read(to_read)
             frame = rs_in.resample_chunk(frame, last = False)
-            frame = torch.from_numpy(frame).mean(dim=1).to(args.device)
+            frame = torch.from_numpy(frame).mean(dim=1)
+
+            frame = frame.to(args.device)
             with torch.no_grad():
-                out = streamer.feed(frame[None])[0]
+                out = streamer.feed(frame[None].half())[0]
             if not out.numel():
                 continue
+
             if args.compressor:
                 out = 0.99 * torch.tanh(out)
             out = out[:, None].repeat(1, channels_out)
@@ -161,6 +186,7 @@ def main():
             out.clamp_(-1, 1)
             out = out.cpu().numpy()
             out = rs_out.resample_chunk(out, last = False)
+
             underflow = stream_out.write(out)
             if overflow or underflow:
                 if current_time >= last_error_time + cooldown_time:
