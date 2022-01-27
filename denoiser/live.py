@@ -93,22 +93,13 @@ def main():
         torch.set_num_threads(args.num_threads)
 
     model = get_model(args).to(args.device)
-    model.eval().half()
+    model.eval()
     print("Model loaded.")
     streamer = DemucsStreamer(model, dry=args.dry, num_frames=args.num_frames)
 
     device_in = parse_audio_device(args.in_)
     caps = query_devices(device_in, "input")
     channels_in = min(caps['max_input_channels'], 2)
-    stream_in = sd.InputStream(
-        device=device_in,
-        samplerate=args.device_sr,
-        channels=channels_in, # try only one channel to reduce latency
-        # blocksize=706, try this
-        dtype=np.float32,
-        # latency='low',
-        # never_drop_input=True
-    )
 
     rs_in = soxr.ResampleStream(
         args.device_sr,
@@ -120,11 +111,6 @@ def main():
     device_out = parse_audio_device(args.out)
     caps = query_devices(device_out, "output")
     channels_out = min(caps['max_output_channels'], 2)
-    stream_out = sd.OutputStream(
-        device=device_out,
-        samplerate=args.device_sr,
-        channels=channels_out,
-        dtype=np.float32)
 
     rs_out = soxr.ResampleStream(
         model.sample_rate,
@@ -138,9 +124,6 @@ def main():
         torch.zeros(1000).cuda()
         torch.zeros(1000).cuda()
 
-    stream_in.start()
-    stream_out.start()
-    first = True
     current_time = 0
     last_log_time = 0
     last_error_time = 0
@@ -149,56 +132,45 @@ def main():
     sr_ms = model.sample_rate / 1000
     stride_ms = streamer.stride / sr_ms
     print(f"Ready to process audio, total lag: {streamer.total_length / sr_ms:.1f}ms.")
-    counter = 0
-    while True:
-        counter += 1
-        if counter == 500:
-            break
-        try:
-            if current_time > last_log_time + log_delta:
-                last_log_time = current_time
-                tpf = streamer.time_per_frame * 1000
-                rtf = tpf / stride_ms
-                print(f"time per frame: {tpf:.1f}ms, ", end='')
-                print(f"RTF: {rtf:.1f}")
-                streamer.reset_time_per_frame()
 
-            length = streamer.total_length if first else streamer.stride
-            first = False
-            current_time += length / model.sample_rate
-            to_read = int(length*args.device_sr/model.sample_rate)
-            frame, overflow = stream_in.read(to_read)
-            frame = rs_in.resample_chunk(frame, last = False)
-            frame = torch.from_numpy(frame).mean(dim=1)
+    def callback(indata, outdata, frames, time, status):
+        if status:
+            print(status)
 
-            frame = frame.to(args.device)
-            with torch.no_grad():
-                out = streamer.feed(frame[None].half())[0]
-            if not out.numel():
-                continue
+        frame = indata
+        frame = rs_in.resample_chunk(frame, last = False)
+        frame = torch.from_numpy(frame).mean(dim=1)
 
-            if args.compressor:
-                out = 0.99 * torch.tanh(out)
-            out = out[:, None].repeat(1, channels_out)
-            mx = out.abs().max().item()
-            if mx > 1:
-                print("Clipping!!")
-            out.clamp_(-1, 1)
-            out = out.cpu().numpy()
-            out = rs_out.resample_chunk(out, last = False)
+        frame = frame.to(args.device)
+        with torch.no_grad():
+            out = streamer.feed(frame[None])[0]
+        if not out.numel():
+            outdata[:] = indata
+            return
 
-            underflow = stream_out.write(out)
-            if overflow or underflow:
-                if current_time >= last_error_time + cooldown_time:
-                    last_error_time = current_time
-                    tpf = 1000 * streamer.time_per_frame
-                    print(f"Not processing audio fast enough, time per frame is {tpf:.1f}ms "
-                          f"(should be less than {stride_ms:.1f}ms).")
-        except KeyboardInterrupt:
-            print("Stopping")
-            break
-    stream_out.stop()
-    stream_in.stop()
+        if args.compressor:
+            out = 0.99 * torch.tanh(out)
+        out = out[:, None].repeat(1, channels_out)
+        mx = out.abs().max().item()
+        if mx > 1:
+            print("Clipping!!")
+        out.clamp_(-1, 1)
+        out = out.cpu().numpy()
+        out = rs_out.resample_chunk(out, last = False)
+        if out.shape[0] < indata.shape[0]:  # buffer not filled yet
+            outdata[:] = indata
+        else:
+            outdata[:] = out[:-1,:]
+
+    to_read = int(streamer.stride*args.device_sr/model.sample_rate)
+    with sd.Stream(device=(device_in, device_out),
+                   samplerate=args.device_sr, blocksize=to_read,
+                   dtype=np.float32, latency=0,
+                   channels=channels_in, callback=callback):
+        print('#' * 80)
+        print('press Return to quit')
+        print('#' * 80)
+        input()
 
 
 if __name__ == "__main__":
