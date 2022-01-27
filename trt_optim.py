@@ -12,7 +12,8 @@ def convert(args):
     model = model.cuda().eval().half()
     print(model)
     # dummy input
-    data = torch.zeros((1, 86, 2)).cuda().half()
+    data = torch.zeros((1, 1, 256)).cuda().half()
+    # print(model(data))
 
     print("Optimizing model...")
     model_trt = torch2trt(model, [data], fp16_mode=True)
