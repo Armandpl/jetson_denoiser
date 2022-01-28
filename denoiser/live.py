@@ -8,6 +8,7 @@
 import argparse
 import sys
 import threading
+from queue import Queue
 
 import numpy as np
 import sounddevice as sd
@@ -98,91 +99,86 @@ def main():
     print("Model loaded.")
     streamer = DemucsStreamer(model, dry=args.dry, num_frames=args.num_frames)
 
-    device_in = parse_audio_device(args.in_)
-    caps = query_devices(device_in, "input")
-    channels_in = min(caps['max_input_channels'], 2)
-    stream_in = sd.InputStream(
-        device=device_in,
-        samplerate=args.device_sr,
-        channels=channels_in,  # try only one channel to reduce latency
-        # blocksize=706, try this
-        dtype=np.float32,
-        # latency='low',
-        # never_drop_input=True
-    )
+    # setup reading/writing threads 
+    input_queue = Queue()
+    block_size = int(streamer.stride*args.device_sr/model.sample_rate)
+    def reading_thread(input_queue):
+        device_in = parse_audio_device(args.in_)
+        caps = query_devices(device_in, "input")
+        channels_in = min(caps['max_input_channels'], 2)
+        stream_in = sd.InputStream(
+            device=device_in,
+            samplerate=args.device_sr,
+            channels=channels_in,
+            dtype=np.float32,
+        )
 
-    rs_in = soxr.ResampleStream(
-        args.device_sr,
-        model.sample_rate,
-        channels_in,
-        dtype='float32'
-    )
+        rs_in = soxr.ResampleStream(
+            args.device_sr,
+            model.sample_rate,
+            channels_in,
+            dtype='float32'
+        )
+        stream_in.start()
+        print("input stream setup")
 
-    device_out = parse_audio_device(args.out)
-    caps = query_devices(device_out, "output")
-    channels_out = min(caps['max_output_channels'], 2)
-    stream_out = sd.OutputStream(
-        device=device_out,
-        samplerate=args.device_sr,
-        channels=channels_out,
-        dtype=np.float32)
+        global thread_running
+        thread_running = True
+        while thread_running:
+            frame, overflow = stream_in.read(block_size)
+            frame = rs_in.resample_chunk(frame, last=False)
+            frame = torch.from_numpy(frame).mean(dim=1)
+            frame = frame.to(args.device)
 
-    rs_out = soxr.ResampleStream(
-        model.sample_rate,
-        args.device_sr,
-        channels_out,
-        dtype='float32'
-    )
+            input_queue.put((frame, overflow))
+
+    output_queue = Queue()
+
+    def writing_thread(output_queue):
+        device_out = parse_audio_device(args.out)
+        caps = query_devices(device_out, "output")
+        channels_out = min(caps['max_output_channels'], 2)
+        stream_out = sd.OutputStream(
+            device=device_out,
+            samplerate=args.device_sr,
+            channels=channels_out,
+            dtype=np.float32)
+
+        rs_out = soxr.ResampleStream(
+            model.sample_rate,
+            args.device_sr,
+            channels_out,
+            dtype='float32'
+        )
+        stream_out.start()
+        print("output stream setup")
+
+        global thread_running
+        thread_running = True
+        while thread_running:  # if new frame to write
+            out = output_queue.get()
+            if args.compressor:
+                out = 0.99 * torch.tanh(out)
+            out = out[:, None].repeat(1, channels_out)
+            mx = out.abs().max().item()
+            if mx > 1:
+                print("Clipping!!")
+            out.clamp_(-1, 1)
+            out = out.cpu().numpy()
+            out = rs_out.resample_chunk(out, last=False)
+            underflow = stream_out.write(out)
+
+    read_thread = threading.Thread(target=reading_thread, args=(input_queue,), daemon=True)
+    read_thread.start()
+
+    write_thread = threading.Thread(target=writing_thread, args=(output_queue,), daemon=True)
+    write_thread.start()
 
     # warmup gpu
     if args.device == "cuda":
-        torch.zeros(1000).cuda()
-        torch.zeros(1000).cuda()
-
-    # raw_audio = None
-    # output = None
-    global out_flag
-    out_flag = False
-    global output
-    global thread_running
-    thread_running = True
-    global first
-    first = True
-    block_size = int(streamer.stride*args.device_sr/model.sample_rate)
-    first_block_size = int(streamer.total_length*args.device_sr/model.sample_rate)
-
-    def start_reading():
-        global raw_audio
-        raw_audio = None
-        global overflow
-        overflow = False
-        global first
-        while thread_running:
-            # length = first_block_size if first else block_size
-            # if first:
-            #     first = False
-            raw_audio, overflow = stream_in.read(block_size)
-
-    def start_writing():
-        global underflow
-        underflow = False
-        global out_flag
-        # while not out_flag:
-        #     pass
-        while thread_running:  # if new frame to write
-            if out_flag:
-                output_copy = output
-                out_flag = False
-                underflow = stream_out.write(output_copy)
-
-    stream_in.start()
-    stream_out.start()
-
-    read_thread = threading.Thread(target=start_reading, daemon=True)
-    read_thread.start()
-
-    write_thread = threading.Thread(target=start_writing, daemon=True)
-    write_thread.start()
+        print("warmup gpu")
+        for _ in range(10):
+            torch.zeros(1000).cuda()
 
     current_time = 0
     last_log_time = 0
@@ -194,68 +190,46 @@ def main():
     print(f"Ready to process audio, total lag: {streamer.total_length / sr_ms:.1f}ms.")
     counter = 0
 
-    frame = raw_audio
-    while frame is None:
-        frame = raw_audio
-
-    print("first frame read")
+    first = True
     while True:
-        counter += 1
-        if counter == 500:
-            break
         try:
-            if True:  # not frame == raw_audio:  # if new frame available
-                if current_time > last_log_time + log_delta:
-                    last_log_time = current_time
-                    tpf = streamer.time_per_frame * 1000
-                    rtf = tpf / stride_ms
-                    print(f"time per frame: {tpf:.1f}ms, ", end='')
-                    print(f"RTF: {rtf:.1f}")
-                    streamer.reset_time_per_frame()
+            if current_time > last_log_time + log_delta:
+                last_log_time = current_time
+                tpf = streamer.time_per_frame * 1000
+                rtf = tpf / stride_ms
+                print(f"time per frame: {tpf:.1f}ms, ", end='')
+                print(f"RTF: {rtf:.1f}")
+                print(f"Input Queue Size {input_queue.qsize()}")
+                print(f"Output Queue Size {output_queue.qsize()}")
+                streamer.reset_time_per_frame()
 
-                length = streamer.total_length if first else streamer.stride
-                first = False
-                current_time += length / model.sample_rate
-                # to_read = int(length*args.device_sr/model.sample_rate)
-                # frame, overflow = stream_in.read(to_read)
+            length = streamer.total_length if first else streamer.stride
+            first = False
+            current_time += length / model.sample_rate
 
-                frame = raw_audio
-                frame = rs_in.resample_chunk(frame, last=False)
-                frame = torch.from_numpy(frame).mean(dim=1)
+            qsize = input_queue.qsize() 
+            qsize = qsize if qsize > 1 else 1
+            for _ in range(qsize):
+                frame, overflow = input_queue.get()
 
-                frame = frame.to(args.device)
-                with torch.no_grad():
-                    print(frame.size())
-                    print(frame.device)
-                    out = streamer.feed(frame[None])[0]
-                if not out.numel():
-                    continue
+            with torch.no_grad():
+                out = streamer.feed(frame[None])[0]
+            if not out.numel():
+                continue
+            else:
+                output_queue.put(out)
 
-                if args.compressor:
-                    out = 0.99 * torch.tanh(out)
-                out = out[:, None].repeat(1, channels_out)
-                mx = out.abs().max().item()
-                if mx > 1:
-                    print("Clipping!!")
-                out.clamp_(-1, 1)
-                out = out.cpu().numpy()
-                out = rs_out.resample_chunk(out, last=False)
-
-                # underflow = stream_out.write(out)
-                output = out
-                out_flag = True
-
-                if overflow or underflow:
-                    if current_time >= last_error_time + cooldown_time:
-                        last_error_time = current_time
-                        tpf = 1000 * streamer.time_per_frame
-                        print(f"Not processing audio fast enough, time per frame is {tpf:.1f}ms "
-                              f"(should be less than {stride_ms:.1f}ms).")
+            if overflow: #  or underflow:
+                if current_time >= last_error_time + cooldown_time:
+                    last_error_time = current_time
+                    tpf = 1000 * streamer.time_per_frame
+                    print(f"Not processing audio fast enough, time per frame is {tpf:.1f}ms "
+                            f"(should be less than {stride_ms:.1f}ms).")
         except KeyboardInterrupt:
             print("Stopping")
             break
 
-    # thread_running = False
+    thread_running = False
     read_thread.join()
     write_thread.join()
 
