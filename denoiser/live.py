@@ -7,6 +7,7 @@
 
 import argparse
 import sys
+import time
 import threading
 
 import numpy as np
@@ -86,9 +87,6 @@ def query_devices(device, kind):
         sys.exit(1)
     return caps
 
-
-
-
 @profile
 def main():
     args = get_parser().parse_args()
@@ -106,7 +104,7 @@ def main():
     stream_in = sd.InputStream(
         device=device_in,
         samplerate=args.device_sr,
-        channels=channels_in,  # try only one channel to reduce latency
+        channels=channels_in, # try only one channel to reduce latency
         # blocksize=706, try this
         dtype=np.float32,
         # latency='low',
@@ -141,50 +139,43 @@ def main():
         torch.zeros(1000).cuda()
         torch.zeros(1000).cuda()
 
+
     raw_audio = None
     output = None
     out_flag = False
     thread_running = True
-    overflow = False
-    underflow = False
     first = True
-    block_size = 2822
-    first_block_size = 3938
-
+    block_size = int(streamer.stride*(args.device_sr/model.sample_rate))
+    first_block_size = streamer.total_length*(args.device_sr/model.sample_rate)
 
     def start_reading():
         global raw_audio
-        global overflow
         global first
         while thread_running:
-            print("read read")
             length = first_block_size if first else block_size
-            print(length)
-            raw_audio, overflow = stream_in.read(length)
-            print(raw_audio)
-
+            raw_audio, _ = stream_in.read(length)
 
     def start_writing():
         global output
         global out_flag
-        global underflow
         while not out_flag:
             pass
-        while thread_running:  # if new frame to write
+        while thread_running:
             output_copy = output
             out_flag = False
-            print(output_copy.shape)
-            underflow = stream_out.write(output_copy)
+            _ = stream_out.write(output_copy)
+
 
     stream_in.start()
     stream_out.start()
 
-    read_thread = threading.Thread(target=start_reading, daemon=True)
+    read_thread = threading.Thread(target = start_reading, daemon = True)
     read_thread.start()
 
-    write_thread = threading.Thread(target=start_writing, daemon=True)
+    write_thread = threading.Thread(target = start_writing, daemon = True)
     write_thread.start()
 
+    first = True
     current_time = 0
     last_log_time = 0
     last_error_time = 0
@@ -201,53 +192,48 @@ def main():
         if counter == 500:
             break
         try:
-            print(frame)
-            print(raw_audio)
-            if True:# not frame == raw_audio:  # if new frame available
-                if current_time > last_log_time + log_delta:
-                    last_log_time = current_time
-                    tpf = streamer.time_per_frame * 1000
-                    rtf = tpf / stride_ms
-                    print(f"time per frame: {tpf:.1f}ms, ", end='')
-                    print(f"RTF: {rtf:.1f}")
-                    streamer.reset_time_per_frame()
+            if current_time > last_log_time + log_delta:
+                last_log_time = current_time
+                tpf = streamer.time_per_frame * 1000
+                rtf = tpf / stride_ms
+                print(f"time per frame: {tpf:.1f}ms, ", end='')
+                print(f"RTF: {rtf:.1f}")
+                streamer.reset_time_per_frame()
 
-                length = streamer.total_length if first else streamer.stride
-                first = False
-                current_time += length / model.sample_rate
-                # to_read = int(length*args.device_sr/model.sample_rate)
-                # frame, overflow = stream_in.read(to_read)
+            length = streamer.total_length if first else streamer.stride
+            first = False
+            current_time += length / model.sample_rate
+            to_read = int(length*args.device_sr/model.sample_rate)
+            # frame, overflow = stream_in.read(to_read)
 
-                frame = raw_audio
-                frame = rs_in.resample_chunk(frame, last=False)
-                frame = torch.from_numpy(frame).mean(dim=1)
+            frame = raw_audio
+            frame = rs_in.resample_chunk(frame, last = False)
+            frame = torch.from_numpy(frame).mean(dim=1)
 
-                frame = frame.to(args.device)
-                with torch.no_grad():
-                    out = streamer.feed(frame[None])[0]
-                if not out.numel():
-                    continue
+            frame = frame.to(args.device)
+            with torch.no_grad():
+                out = streamer.feed(frame[None])[0]
+            if not out.numel():
+                continue
 
-                if args.compressor:
-                    out = 0.99 * torch.tanh(out)
-                out = out[:, None].repeat(1, channels_out)
-                mx = out.abs().max().item()
-                if mx > 1:
-                    print("Clipping!!")
-                out.clamp_(-1, 1)
-                out = out.cpu().numpy()
-                out = rs_out.resample_chunk(out, last=False)
+            if args.compressor:
+                out = 0.99 * torch.tanh(out)
+            out = out[:, None].repeat(1, channels_out)
+            mx = out.abs().max().item()
+            if mx > 1:
+                print("Clipping!!")
+            out.clamp_(-1, 1)
+            out = out.cpu().numpy()
+            out = rs_out.resample_chunk(out, last = False)
 
-                # underflow = stream_out.write(out)
-                output = out
-                out_flag = True
-
-                if overflow or underflow:
-                    if current_time >= last_error_time + cooldown_time:
-                        last_error_time = current_time
-                        tpf = 1000 * streamer.time_per_frame
-                        print(f"Not processing audio fast enough, time per frame is {tpf:.1f}ms "
-                              f"(should be less than {stride_ms:.1f}ms).")
+            # underflow = stream_out.write(out)
+            output = out
+            # if overflow or underflow:
+            #     if current_time >= last_error_time + cooldown_time:
+            #         last_error_time = current_time
+            #         tpf = 1000 * streamer.time_per_frame
+            #         print(f"Not processing audio fast enough, time per frame is {tpf:.1f}ms "
+            #               f"(should be less than {stride_ms:.1f}ms).")
         except KeyboardInterrupt:
             print("Stopping")
             break
