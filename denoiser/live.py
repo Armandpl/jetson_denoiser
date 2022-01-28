@@ -87,8 +87,6 @@ def query_devices(device, kind):
     return caps
 
 
-
-
 @profile
 def main():
     args = get_parser().parse_args()
@@ -141,40 +139,41 @@ def main():
         torch.zeros(1000).cuda()
         torch.zeros(1000).cuda()
 
-    raw_audio = None
-    output = None
+    # raw_audio = None
+    # output = None
+    global out_flag
     out_flag = False
+    global output
+    global thread_running
     thread_running = True
-    overflow = False
-    underflow = False
+    global first
     first = True
-    block_size = 2822
-    first_block_size = 3938
-
+    block_size = int(streamer.stride*args.device_sr/model.sample_rate)
+    first_block_size = int(streamer.total_length*args.device_sr/model.sample_rate)
 
     def start_reading():
         global raw_audio
+        raw_audio = None
         global overflow
+        overflow = False
         global first
         while thread_running:
-            print("read read")
-            length = first_block_size if first else block_size
-            print(length)
-            raw_audio, overflow = stream_in.read(length)
-            print(raw_audio)
-
+            # length = first_block_size if first else block_size
+            # if first:
+            #     first = False
+            raw_audio, overflow = stream_in.read(block_size)
 
     def start_writing():
-        global output
-        global out_flag
         global underflow
-        while not out_flag:
-            pass
+        underflow = False
+        global out_flag
+        # while not out_flag:
+        #     pass
         while thread_running:  # if new frame to write
-            output_copy = output
-            out_flag = False
-            print(output_copy.shape)
-            underflow = stream_out.write(output_copy)
+            if out_flag:
+                output_copy = output
+                out_flag = False
+                underflow = stream_out.write(output_copy)
 
     stream_in.start()
     stream_out.start()
@@ -196,14 +195,16 @@ def main():
     counter = 0
 
     frame = raw_audio
+    while frame is None:
+        frame = raw_audio
+
+    print("first frame read")
     while True:
         counter += 1
         if counter == 500:
             break
         try:
-            print(frame)
-            print(raw_audio)
-            if True:# not frame == raw_audio:  # if new frame available
+            if True:  # not frame == raw_audio:  # if new frame available
                 if current_time > last_log_time + log_delta:
                     last_log_time = current_time
                     tpf = streamer.time_per_frame * 1000
@@ -224,6 +225,8 @@ def main():
 
                 frame = frame.to(args.device)
                 with torch.no_grad():
+                    print(frame.size())
+                    print(frame.device)
                     out = streamer.feed(frame[None])[0]
                 if not out.numel():
                     continue
@@ -252,7 +255,7 @@ def main():
             print("Stopping")
             break
 
-    thread_running = False
+    # thread_running = False
     read_thread.join()
     write_thread.join()
 
