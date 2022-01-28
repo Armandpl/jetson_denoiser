@@ -93,7 +93,7 @@ def main():
         torch.set_num_threads(args.num_threads)
 
     model = get_model(args).to(args.device)
-    model.eval().half()
+    model.eval()
     print("Model loaded.")
     streamer = DemucsStreamer(model, dry=args.dry, num_frames=args.num_frames)
 
@@ -173,7 +173,7 @@ def main():
 
             frame = frame.to(args.device)
             with torch.no_grad():
-                out = streamer.feed(frame[None].half())[0]
+                out = streamer.feed(frame[None])[0]
             if not out.numel():
                 continue
 
