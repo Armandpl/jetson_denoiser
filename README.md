@@ -15,6 +15,8 @@ This is a fork of [facebookresearch/denoiser](https://github.com/facebookresearc
 - Find your audio interface id `python -m sounddevice`
 - Run the denoiser `python -m denoiser.live -i 11 -o 11 --device_sr 44100 -f 4 --device cuda`
 
+_Note: This was only tested on a jetson nano 4GB. Running the denoising scripts takes about 3GB of RAM. Not sure if this would work on a 2GB jetson nano without optimizing the model._
+
 _original readme below_
 ---
 
