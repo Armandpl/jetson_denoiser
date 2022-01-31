@@ -19,10 +19,10 @@ from .demucs import DemucsStreamer
 from .pretrained import add_model_flags, get_model
 from .utils import bold
 
-import line_profiler
-import atexit
-profile = line_profiler.LineProfiler()
-atexit.register(profile.print_stats, output_unit=1e-03)
+# import line_profiler
+# import atexit
+# profile = line_profiler.LineProfiler()
+# atexit.register(profile.print_stats, output_unit=1e-03)
 
 
 def get_parser():
@@ -88,7 +88,7 @@ def query_devices(device, kind):
     return caps
 
 
-@profile
+# @profile
 def main():
     args = get_parser().parse_args()
     if args.num_threads:
