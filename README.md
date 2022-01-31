@@ -13,7 +13,7 @@ This is a fork of [facebookresearch/denoiser](https://github.com/facebookresearc
 - Build the docker image `cd jetson_denoiser && sudo docker build -t jetson_denoiser:latest docker/`
 - Run the docker image `sudo docker/run.sh -c jetson_denoiser:latest`
 - Find your audio interface id `python -m sounddevice`
-- Run the denoiser `python -m denoiser.live -i 11 -o 11 --device_sr 44100 -f 4 --device cuda`
+- Run the denoiser `python -m denoiser.live -i 11 -o 11 --device_sr 44100 -f 3 --device cuda`
 
 _Note 1: This was only tested on a jetson nano 4GB. Running the denoising scripts takes about 3GB of RAM. Not sure if this would work on a 2GB jetson nano without optimizing the model._  
 
