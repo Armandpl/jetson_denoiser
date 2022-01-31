@@ -1,6 +1,28 @@
-# Real Time Speech Enhancement in the Waveform Domain (Interspeech 2020)
-
+# Real Time Speech Enhancement in the Waveform Domain **on a jetson nano** (Interspeech 2020)
 ![tests badge](https://github.com/facebookresearch/denoiser/workflows/tests/badge.svg)
+
+This is a fork of [facebookresearch/denoiser](https://github.com/facebookresearch/denoiser). We used it to prototype a deep learning based hearing aid. It includes a few modifications to make it possible to deploy it on a jetson nano embedded device. Namely:
+- [x] Sample rate conversion
+- [x] Read/Write to audio device in threads to save a few precious milliseconds
+- [x] A docker image based on [dusty-nv/jetson-voice](https://github.com/dusty-nv/jetson-voice) image for fast deployment
+- [ ] TensorRT optimized model
+
+## Getting started
+- Install Jetpack 4.6.1
+- Clone this repo `git clone https://github.com/Armandpl/jetson_denoiser/`
+- Build the docker image `cd jetson_denoiser && sudo docker build -t jetson_denoiser:latest docker/`
+- Run the docker image `sudo docker/run.sh -c jetson_denoiser:latest`
+- Find your audio interface id `python -m sounddevice`
+- Run the denoiser `python -m denoiser.live -i 11 -o 11 --device_sr 44100 -f 4 --device cuda`
+
+_Note 1: This was only tested on a jetson nano 4GB. Running the denoising scripts takes about 3GB of RAM. Not sure if this would work on a 2GB jetson nano without optimizing the model._  
+
+_Note 2: You'll need a 64GB SD card if you intend to use the docker image. Pulling the base image takes quite a bit of space._
+
+_original readme below_
+---
+
+
 
 We provide a [PyTorch][pytorch] implementation of the paper: [Real Time Speech Enhancement in the Waveform Domain][arxiv].
 In which, we present a causal speech enhancement model working on the raw waveform that runs in real-time on a laptop CPU.
