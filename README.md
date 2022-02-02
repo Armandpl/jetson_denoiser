@@ -2,7 +2,7 @@
 ![tests badge](https://github.com/facebookresearch/denoiser/workflows/tests/badge.svg)
 
 This is a fork of [facebookresearch/denoiser](https://github.com/facebookresearch/denoiser). We used it to prototype a deep learning based hearing aid.  
-The idea is to use it to listen to surrounding sounds, isolates voices and amplify only those to aid comprehension.  
+The idea is to use it to listen to surrounding sounds, isolate voices and amplify only those to aid comprehension.  
 This forks includes a few modifications to make it possible to deploy it on a jetson nano embedded device. Namely:
 - [x] Sample rate conversion
 - [x] Read/Write to audio device in threads to save a few precious milliseconds
