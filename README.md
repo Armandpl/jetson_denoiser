@@ -1,11 +1,18 @@
-# Real Time Speech Enhancement in the Waveform Domain **on a jetson nano** (Interspeech 2020)
+# Real Time Speech Enhancement in the Waveform Domain _on a Jetson Nano_ (Interspeech 2020)
 ![tests badge](https://github.com/facebookresearch/denoiser/workflows/tests/badge.svg)
 
-This is a fork of [facebookresearch/denoiser](https://github.com/facebookresearch/denoiser). We used it to prototype a deep learning based hearing aid. It includes a few modifications to make it possible to deploy it on a jetson nano embedded device. Namely:
+This is a fork of [facebookresearch/denoiser](https://github.com/facebookresearch/denoiser). We used it to prototype a deep learning based hearing aid.  
+The idea is to use it to listen to surrounding sounds, isolates voices and amplify only those to aid comprehension.  
+This forks includes a few modifications to make it possible to deploy it on a jetson nano embedded device. Namely:
 - [x] Sample rate conversion
 - [x] Read/Write to audio device in threads to save a few precious milliseconds
 - [x] A docker image based on [dusty-nv/jetson-voice](https://github.com/dusty-nv/jetson-voice) image for fast deployment
 - [ ] TensorRT optimized model
+
+<p align="center">
+<img src="./img/prototype.jpg" alt="Prototype picture." width="50%"> <br/>
+<i>Hearing Aid Prototype Picture.</i>
+</p>
 
 ## Getting started
 - Install Jetpack 4.6.1
